@@ -1,4 +1,7 @@
 {
   "keywords": {},
-  "responses": {}
+  "responses": {
+    "produk": "produk kami adalah eiger...",
+    "eiger": "silahkan piih produk kami"
+  }
 }
