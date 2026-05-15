@@ -5,6 +5,9 @@ const STOPWORDS_ID = new Set([
   'mereka', 'apa', 'siapa', 'kapan', 'dimana', 'bagaimana', 'kenapa', 'jika', 'kalau'
 ]);
 
+// Simple synonyms/normalization map for common user terms
+const SYNONYM_RE = /\b(kids|kid|children|child|anak|jr)\b/gi;
+
 /**
  * RAGEngine handles document tokenization, indexing (TF-IDF), and context retrieval.
  */
@@ -23,11 +26,16 @@ class RAGEngine {
    */
   tokenize(text) {
     if (!text) return [];
-    return text
+    // Normalize common synonyms before tokenization (e.g. 'kids' -> 'junior')
+    const normalized = text
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(SYNONYM_RE, 'junior')
+      .replace(/[^a-z0-9\s]/g, ' ');
+
+    // Keep short tokens of length >= 2 (so abbreviations like 'jr' aren't dropped)
+    return normalized
       .split(/\s+/)
-      .filter(token => token.length > 2 && !STOPWORDS_ID.has(token));
+      .filter(token => token.length > 1 && !STOPWORDS_ID.has(token));
   }
 
   /**
@@ -187,4 +195,4 @@ class RAGEngine {
   }
 }
 
-module.exports = RAGEngine;
+module.exports = RAGEngine;
