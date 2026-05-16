@@ -39,7 +39,12 @@ const BEHAVIOR_FILE = path.join(__dirname, 'Config', 'behavior.json');
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.static('Public'));
+app.use(express.static(path.join(__dirname, 'Public')));
+
+// Main Landing Page Route
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'Public', 'index.html'));
+});
 
 // Admin Dashboard Route
 app.get('/admin', (req, res) => {
