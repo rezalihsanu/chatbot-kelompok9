@@ -12,6 +12,23 @@ const Groq = require('groq-sdk');
 const RAGEngine = require('./Lib/rag');
 const DatasetManager = require('./Lib/dataset');
 
+// Global error handler untuk mencegah server crash saat whatsapp-web.js logout dan file terkunci (EBUSY)
+process.on('unhandledRejection', (reason, promise) => {
+  if (reason && reason.message && reason.message.includes('EBUSY')) {
+    console.warn('⚠️ Diabaikan: File session terkunci saat logout (EBUSY). Ini aman diabaikan.');
+  } else {
+    console.error('Unhandled Rejection:', reason);
+  }
+});
+
+process.on('uncaughtException', (err) => {
+  if (err && err.message && err.message.includes('EBUSY')) {
+    console.warn('⚠️ Diabaikan: File session terkunci (EBUSY).');
+  } else {
+    console.error('Uncaught Exception:', err);
+  }
+});
+
 // --- Configuration & Constants ---
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -35,12 +52,22 @@ const rag = new RAGEngine();
 const datasets = new DatasetManager();
 
 // --- Bot State ---
-let client = null;
-let qrCodeData = null;
-let isReady = false;
-let isCleaning = false;
-let isInitializing = false;
+const bots = {}; // Store states per category: bots[category] = { client, qrCodeData, isReady, isCleaning, isInitializing }
 const handledMessageIds = new Set();
+
+function getBotState(category) {
+  if (!bots[category]) {
+    bots[category] = {
+      client: null,
+      qrCodeData: null,
+      isReady: false,
+      isCleaning: false,
+      isInitializing: false,
+      phoneNumber: null
+    };
+  }
+  return bots[category];
+}
 
 // --- Helper Functions ---
 
@@ -138,11 +165,13 @@ async function getAIResponse(message, contextItems = [], behavior = null) {
 
 // --- WhatsApp Client Logic ---
 
-function initializeClient() {
-  if (client) return client;
+function initializeClient(category) {
+  const state = getBotState(category);
+  if (state.client) return state.client;
 
-  client = new Client({
-    authStrategy: new LocalAuth({ clientId: 'whatsapp-bot' }),
+  // Use distinct clientId per category to separate sessions
+  state.client = new Client({
+    authStrategy: new LocalAuth({ clientId: `whatsapp-bot-${category}` }),
     puppeteer: {
       headless: true,
       args: [
@@ -154,34 +183,35 @@ function initializeClient() {
     }
   });
 
-  client.on('qr', (qr) => {
-    console.log('📱 QR Code Generated');
-    qrCodeData = qr;
+  state.client.on('qr', (qr) => {
+    console.log(`📱 QR Code Generated for ${category}`);
+    state.qrCodeData = qr;
     qrcode.generate(qr, { small: true });
   });
 
-  client.on('ready', () => {
-    console.log('✅ Bot is ready!');
-    isReady = true;
-    isCleaning = false;
+  state.client.on('ready', () => {
+    console.log(`✅ Bot [${category}] is ready!`);
+    state.isReady = true;
+    state.isCleaning = false;
+    state.phoneNumber = state.client.info && state.client.info.wid ? state.client.info.wid.user : null;
   });
 
-  client.on('authenticated', () => console.log('🔐 Client authenticated'));
+  state.client.on('authenticated', () => console.log(`🔐 Client [${category}] authenticated`));
 
-  client.on('disconnected', (reason) => {
-    console.log('❌ Client disconnected:', reason);
-    isReady = false;
-    client = null;
-    qrCodeData = null;
+  state.client.on('disconnected', (reason) => {
+    console.log(`❌ Client [${category}] disconnected:`, reason);
+    state.isReady = false;
+    state.client = null;
+    state.qrCodeData = null;
   });
 
-  client.on('message', (msg) => handleIncomingMessage(msg));
-  client.on('message_create', (msg) => handleIncomingMessage(msg));
+  state.client.on('message', (msg) => handleIncomingMessage(msg, category));
+  state.client.on('message_create', (msg) => handleIncomingMessage(msg, category));
 
-  return client;
+  return state.client;
 }
 
-async function handleIncomingMessage(msg) {
+async function handleIncomingMessage(msg, category) {
   try {
     const messageId = msg?.id?._serialized;
     if (!messageId || msg.fromMe || handledMessageIds.has(messageId)) return;
@@ -208,14 +238,20 @@ async function handleIncomingMessage(msg) {
     // 1. Check exact keyword matches in knowledge
     if (knowledge.responses[query]) {
       await msg.reply(knowledge.responses[query]);
-      console.log('🎯 Replied with FAQ keyword match');
+      console.log(`🎯 Replied with FAQ keyword match on [${category}]`);
       return;
     }
 
     // 2. Fallback to RAG + AI
-    const allDocs = datasets.getAllDocuments();
+    // Restrict retrieval to specific category dataset
+    const allDocs = datasets.getDatasetDocuments(category) || [];
+    if (allDocs.length === 0) {
+      console.warn(`WARNING: No documents found for category ${category}. Falling back to all documents.`);
+      allDocs.push(...datasets.getAllDocuments());
+    }
+    
     const contextItems = rag.retrieveContext(msg.body, allDocs, Number(process.env.RAG_TOP_K || 3));
-    console.log(`🔍 RAG Retrieved ${contextItems.length} context(s)`);
+    console.log(`🔍 RAG Retrieved ${contextItems.length} context(s) for [${category}]`);
 
     const behavior = loadBehavior();
     const timeoutPromise = new Promise((_, reject) => 
@@ -243,33 +279,50 @@ async function handleIncomingMessage(msg) {
   }
 }
 
-async function startBot() {
-  if (isReady || isInitializing) return { success: false, message: 'Bot sudah berjalan' };
-  if (isCleaning) return { success: false, message: 'Harap tunggu, bot sedang dihentikan' };
+async function startBot(category) {
+  const state = getBotState(category);
+  if (state.isReady || state.isInitializing) return { success: false, message: `Bot [${category}] sudah berjalan` };
+  if (state.isCleaning) return { success: false, message: `Harap tunggu, bot [${category}] sedang dihentikan` };
   
-  isInitializing = true;
+  state.isInitializing = true;
   try {
-    const instance = initializeClient();
+    const instance = initializeClient(category);
     await instance.initialize();
-    isInitializing = false;
-    return { success: true, message: 'Bot sedang dimulai, silakan scan QR' };
+    state.isInitializing = false;
+    return { success: true, message: `Bot [${category}] sedang dimulai, silakan scan QR` };
   } catch (error) {
-    isInitializing = false;
-    client = null;
+    state.isInitializing = false;
+    state.client = null;
     throw error;
   }
 }
 
 // --- API Routes ---
 
+// API to list available bot categories based on datasets
+app.get('/api/bot/categories', (req, res) => {
+  res.json({ categories: datasets.listDatasets() });
+});
+
 // Bot Status
 app.get('/api/bot/status', (req, res) => {
-  res.json({ isReady, isCleaning, isInitializing, hasQRCode: !!qrCodeData });
+  const category = req.query.category;
+  if (!category) return res.status(400).json({ message: 'Category is required' });
+  const state = getBotState(category);
+  res.json({ 
+    isReady: state.isReady, 
+    isCleaning: state.isCleaning, 
+    isInitializing: state.isInitializing, 
+    hasQRCode: !!state.qrCodeData,
+    phoneNumber: state.phoneNumber
+  });
 });
 
 app.post('/api/bot/start', async (req, res) => {
+  const category = req.body.category || req.query.category;
+  if (!category) return res.status(400).json({ success: false, message: 'Category is required' });
   try {
-    const result = await startBot();
+    const result = await startBot(category);
     res.json(result);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -277,26 +330,35 @@ app.post('/api/bot/start', async (req, res) => {
 });
 
 app.post('/api/bot/stop', async (req, res) => {
-  if (!client) return res.json({ success: false, message: 'Bot tidak aktif' });
+  const category = req.body.category || req.query.category;
+  if (!category) return res.status(400).json({ success: false, message: 'Category is required' });
   
-  isCleaning = true;
-  isReady = false;
-  qrCodeData = null;
-  const target = client;
-  client = null;
+  const state = getBotState(category);
+  if (!state.client) return res.json({ success: false, message: `Bot [${category}] tidak aktif` });
   
-  res.json({ success: true, message: 'Bot sedang dihentikan' });
+  state.isCleaning = true;
+  state.isReady = false;
+  state.qrCodeData = null;
+  const target = state.client;
+  state.client = null;
+  
+  res.json({ success: true, message: `Bot [${category}] sedang dihentikan` });
   
   try {
     await target.destroy();
   } catch (err) {
-    console.error('Error stopping client:', err.message);
+    console.error(`Error stopping client [${category}]:`, err.message);
   } finally {
-    isCleaning = false;
+    state.isCleaning = false;
   }
 });
 
-app.get('/api/bot/qr', (req, res) => res.json({ qr: qrCodeData }));
+app.get('/api/bot/qr', (req, res) => {
+  const category = req.query.category;
+  if (!category) return res.status(400).json({ message: 'Category is required' });
+  const state = getBotState(category);
+  res.json({ qr: state.qrCodeData });
+});
 
 // Datasets
 app.get('/api/datasets', (req, res) => {
@@ -372,6 +434,6 @@ app.listen(PORT, () => {
   console.log(`📦 Datasets Loaded: ${datasets.listDatasets().length}\n`);
 
   if (process.env.AUTO_START_BOT !== 'false') {
-    setTimeout(() => startBot().catch(e => console.error('Auto-start failed:', e.message)), 1000);
+    console.log('Use Admin Dashboard to start bots manually per category.');
   }
-});
+});

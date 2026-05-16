@@ -5,6 +5,38 @@
 const API_URL = '/api';
 
 // --- UI Utilities ---
+let currentCategory = '';
+
+async function loadCategories() {
+  try {
+    const response = await fetch(`${API_URL}/bot/categories`);
+    const data = await response.json();
+    const select = document.getElementById('botCategory');
+    if (data.categories && data.categories.length > 0) {
+      select.innerHTML = '';
+      data.categories.forEach(catItem => {
+        // Handle if API returns object { name: '...' } or string
+        const catName = typeof catItem === 'object' ? catItem.name : catItem;
+        
+        const opt = document.createElement('option');
+        opt.value = catName;
+        opt.textContent = catName.charAt(0).toUpperCase() + catName.slice(1);
+        select.appendChild(opt);
+      });
+      currentCategory = select.value;
+      checkBotStatus();
+    } else {
+      select.innerHTML = '<option value="">Tidak ada dataset</option>';
+    }
+  } catch (error) {
+    console.error('Error loading categories:', error);
+  }
+}
+
+function categoryChanged() {
+  currentCategory = document.getElementById('botCategory').value;
+  checkBotStatus();
+}
 
 function showNotification(message, type = 'info', duration = 3000) {
   const notification = document.createElement('div');
@@ -40,8 +72,9 @@ function switchTab(tabId) {
 // --- Bot Management ---
 
 async function checkBotStatus() {
+  if (!currentCategory) return;
   try {
-    const response = await fetch(`${API_URL}/bot/status`);
+    const response = await fetch(`${API_URL}/bot/status?category=${currentCategory}`);
     const data = await response.json();
     
     const elements = {
@@ -55,7 +88,7 @@ async function checkBotStatus() {
 
     if (data.isReady) {
       elements.dot.classList.add('active');
-      elements.text.textContent = 'Bot Connected';
+      elements.text.textContent = `Bot [${currentCategory}] Connected`;
       elements.startBtn.style.display = 'none';
       elements.stopBtn.style.display = 'inline-block';
       elements.qr.style.display = 'none';
@@ -89,8 +122,9 @@ async function checkBotStatus() {
 }
 
 async function loadQRCode() {
+  if (!currentCategory) return;
   try {
-    const response = await fetch(`${API_URL}/bot/qr`);
+    const response = await fetch(`${API_URL}/bot/qr?category=${currentCategory}`);
     const data = await response.json();
     if (data.qr) {
       const container = document.getElementById('qrcode');
@@ -102,28 +136,40 @@ async function loadQRCode() {
 }
 
 async function startBot() {
+  if (!currentCategory) return;
   try {
-    const response = await fetch(`${API_URL}/bot/start`, { method: 'POST' });
+    const response = await fetch(`${API_URL}/bot/start`, { 
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: currentCategory })
+    });
     const data = await response.json();
-    showNotification(data.message, 'success');
-    checkBotStatus();
-    
-    // Check more frequently during startup
-    const interval = setInterval(checkBotStatus, 2000);
-    setTimeout(() => clearInterval(interval), 120000);
+    showNotification(data.message, data.success ? 'success' : 'error');
+    if (data.success) {
+      checkBotStatus();
+      
+      // Check more frequently during startup
+      const interval = setInterval(checkBotStatus, 2000);
+      setTimeout(() => clearInterval(interval), 120000);
+    }
   } catch (error) {
     showNotification('Error starting bot: ' + error.message, 'error');
   }
 }
 
 async function stopBot() {
+  if (!currentCategory) return;
   try {
     const btn = document.getElementById('stopBtn');
     btn.disabled = true;
     
-    const response = await fetch(`${API_URL}/bot/stop`, { method: 'POST' });
+    const response = await fetch(`${API_URL}/bot/stop`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: currentCategory })
+    });
     const data = await response.json();
-    showNotification(data.message, 'success');
+    showNotification(data.message, data.success ? 'success' : 'error');
     
     btn.disabled = false;
     checkBotStatus();
@@ -234,5 +280,5 @@ document.getElementById('stopBtn').addEventListener('click', stopBot);
 
 // --- Initialization ---
 
-checkBotStatus();
-setInterval(checkBotStatus, 5000);
+loadCategories();
+setInterval(checkBotStatus, 5000);

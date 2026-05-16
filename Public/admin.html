@@ -350,8 +350,15 @@ Pengetahuan</button>
 <div class="content">
 <div id="control" class="tab-pane active">
 <h2>Kontrol Bot</h2>
-<p class="subtitle">Kelola koneksi bot WhatsApp
-Anda</p>
+<p class="subtitle">Kelola koneksi bot WhatsApp Anda</p>
+
+<div class="form-group" style="background:#f8fafb; padding:16px; border-radius:8px; margin-bottom:24px;">
+<label>Pilih Kategori Bot</label>
+<select id="botCategory" style="width:100%; padding:10px; border-radius:6px; border:1px solid #ccc; font-size:14px;" onchange="categoryChanged()">
+<option value="">Memuat kategori...</option>
+</select>
+</div>
+
 <div class="alert alert-info">
 Gunakan panel ini untuk menghubungkan bot dengan
 akun WhatsApp Anda
